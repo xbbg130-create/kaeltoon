@@ -72,7 +72,7 @@ export const fetchSearchResults = async (query) => {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
     const result = await response.json()
-    
+
     return await result.data;
   } catch (error) {
     console.error(`Error searching comics for query ${query}:`, error);
