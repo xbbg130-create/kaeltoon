@@ -14,41 +14,57 @@ import Image from "next/image";
 // --- PERUBAHAN DIMULAI DI SINI ---
 
 // Custom Image Component dengan Lazy Loading & IntersectionObserver
-const PageImage = ({ src, alt, index, onImageLoad }) => {
+const PageImage = ({ src, alt, index, onImageLoad, onBecomeVisible }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [isInView, setIsInView] = useState(false);
   const imageRef = useRef(null);
 
   useEffect(() => {
-    // Inisialisasi observer untuk lazy loading
-    const observer = new IntersectionObserver(
+    // Observer untuk lazy loading
+    const lazyObserver = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
           setIsInView(true);
-          observer.unobserve(entry.target);
+          lazyObserver.unobserve(entry.target);
         }
       },
       {
-        // Mulai loading 300px sebelum gambar masuk layar
         rootMargin: "300px 0px",
       }
     );
 
+    // Observer untuk tracking gambar yang sedang dibaca (di tengah viewport)
+    const trackingObserver = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && onBecomeVisible) {
+          onBecomeVisible(index);
+        }
+      },
+      {
+        // Aktif saat gambar berada di area tengah viewport
+        rootMargin: "-20% 0px -60% 0px",
+        threshold: 0,
+      }
+    );
+
     if (imageRef.current) {
-      observer.observe(imageRef.current);
+      lazyObserver.observe(imageRef.current);
+      trackingObserver.observe(imageRef.current);
     }
 
     return () => {
       if (imageRef.current) {
-        observer.unobserve(imageRef.current);
+        lazyObserver.unobserve(imageRef.current);
+        trackingObserver.unobserve(imageRef.current);
       }
     };
-  }, []);
+  }, [index, onBecomeVisible]);
 
   return (
     <div
       ref={imageRef}
+      id={`page-${index}`}
       className="w-full relative"
       style={{ minHeight: isInView ? 'auto' : '500px' }}
     >
@@ -101,13 +117,14 @@ export default function ReaderPage() {
   const [currentChapterSlug, setCurrentChapterSlug] = useState(null);
   const [loadedImagesCount, setLoadedImagesCount] = useState(0);
   const [hasRestoredScroll, setHasRestoredScroll] = useState(false);
+  const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const saveTimeoutRef = useRef(null);
 
-  // Get scroll percentage from URL if coming from history
-  const scrollFromUrl = searchParams.get('scroll');
+  // Get page index from URL if coming from history
+  const pageFromUrl = searchParams.get('page');
 
-  // Debounced save scroll position to history
-  const saveScrollPosition = useCallback((scrollPercent, comicSlug, chapterSlug, mangaTitle, chapterTitle) => {
+  // Debounced save page index to history
+  const saveCurrentPage = useCallback((pageIndex, comicSlug, chapterSlug, mangaTitle, chapterTitle) => {
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
@@ -118,10 +135,25 @@ export default function ReaderPage() {
         chapterSlug,
         mangaTitle,
         chapterTitle,
-        scrollPercent: scrollPercent, // Save as percentage (0-100)
+        lastPage: pageIndex, // Save as page index (0-based)
       });
-    }, 500); // Save after 500ms of no scroll activity
+    }, 500); // Save after 500ms of no activity
   }, []);
+
+  // Handle when a page becomes visible in viewport
+  const handlePageVisible = useCallback((pageIndex) => {
+    setCurrentPageIndex(pageIndex);
+
+    if (chapterData && currentComicSlug && currentChapterSlug) {
+      saveCurrentPage(
+        pageIndex,
+        currentComicSlug,
+        currentChapterSlug,
+        chapterData.manga_title,
+        chapterData.chapter_title
+      );
+    }
+  }, [chapterData, currentComicSlug, currentChapterSlug, saveCurrentPage]);
 
   useEffect(() => {
     if (slug && slug.length > 0) {
@@ -147,7 +179,7 @@ export default function ReaderPage() {
             chapterSlug: chapterSlug,
             mangaTitle: data.manga_title,
             chapterTitle: data.chapter_title,
-            scrollPercent: 0,
+            lastPage: 0,
           });
 
           // Reset loaded images count when new chapter data is set
@@ -165,56 +197,28 @@ export default function ReaderPage() {
       // Reset states when chapter changes
       setLoadedImagesCount(0);
       setHasRestoredScroll(false);
+      setCurrentPageIndex(0);
     }
   }, [slug]);
 
   // Restore scroll position when coming from history
   useEffect(() => {
-    if (scrollFromUrl && !loading && chapterData && !hasRestoredScroll) {
-      const scrollPercent = parseFloat(scrollFromUrl);
-      if (!isNaN(scrollPercent) && scrollPercent > 0) {
+    if (pageFromUrl && !loading && chapterData && !hasRestoredScroll) {
+      const pageIndex = parseInt(pageFromUrl, 10);
+      if (!isNaN(pageIndex) && pageIndex > 0) {
         // Wait for images to start rendering
         const scrollTimeout = setTimeout(() => {
-          const documentHeight = document.documentElement.scrollHeight - window.innerHeight;
-          const targetScrollY = (scrollPercent / 100) * documentHeight;
-          window.scrollTo({ top: targetScrollY, behavior: 'smooth' });
-          setHasRestoredScroll(true);
-        }, 800); // Wait a bit longer for images to load
+          const pageElement = document.getElementById(`page-${pageIndex}`);
+          if (pageElement) {
+            pageElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            setHasRestoredScroll(true);
+          }
+        }, 600);
 
         return () => clearTimeout(scrollTimeout);
       }
     }
-  }, [scrollFromUrl, loading, chapterData, hasRestoredScroll]);
-
-  // Track scroll position and save to history
-  useEffect(() => {
-    if (!chapterData || !currentComicSlug || !currentChapterSlug) return;
-
-    const handleScroll = () => {
-      const documentHeight = document.documentElement.scrollHeight - window.innerHeight;
-      if (documentHeight <= 0) return;
-
-      const scrollPercent = (window.scrollY / documentHeight) * 100;
-
-      saveScrollPosition(
-        Math.round(scrollPercent * 100) / 100, // Round to 2 decimal places
-        currentComicSlug,
-        currentChapterSlug,
-        chapterData.manga_title,
-        chapterData.chapter_title
-      );
-    };
-
-    window.addEventListener('scroll', handleScroll, { passive: true });
-
-    return () => {
-      window.removeEventListener('scroll', handleScroll);
-      // Clear any pending save timeout on cleanup
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-      }
-    };
-  }, [chapterData, currentComicSlug, currentChapterSlug, saveScrollPosition]);
+  }, [pageFromUrl, loading, chapterData, hasRestoredScroll]);
 
   const navigateToChapter = (chapterSlug) => {
     router.push(`/read/${currentComicSlug}/${chapterSlug}`);
@@ -338,6 +342,7 @@ export default function ReaderPage() {
                 alt={`Page ${index + 1}`}
                 index={index}
                 onImageLoad={() => setLoadedImagesCount(prev => prev + 1)}
+                onBecomeVisible={handlePageVisible}
               />
             ))}
           </>

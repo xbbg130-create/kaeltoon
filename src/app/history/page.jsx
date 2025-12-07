@@ -140,7 +140,7 @@ export default function HistoryPage() {
 
                                         <div className="flex flex-wrap gap-2">
                                             <Button asChild size="sm">
-                                                <Link href={`/read/${item.chapterSlug}${item.scrollPercent ? `?scroll=${item.scrollPercent}` : ''}`}>
+                                                <Link href={`/read/${item.chapterSlug}${item.lastPage ? `?page=${item.lastPage}` : ''}`}>
                                                     Continue Reading
                                                     <ChevronRight className="h-4 w-4 ml-1" />
                                                 </Link>
