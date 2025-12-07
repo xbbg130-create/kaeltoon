@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -21,10 +21,9 @@ const PageImage = ({ src, alt, index, onImageLoad }) => {
   const imageRef = useRef(null);
 
   useEffect(() => {
-    // Inisialisasi observer
+    // Inisialisasi observer untuk lazy loading
     const observer = new IntersectionObserver(
       ([entry]) => {
-        // Jika elemen masuk ke viewport, set state dan berhenti mengamati
         if (entry.isIntersecting) {
           setIsInView(true);
           observer.unobserve(entry.target);
@@ -32,23 +31,20 @@ const PageImage = ({ src, alt, index, onImageLoad }) => {
       },
       {
         // Mulai loading 300px sebelum gambar masuk layar
-        // agar pengguna tidak melihat loading saat scroll cepat
         rootMargin: "300px 0px",
       }
     );
 
-    // Mulai mengamati elemen ref
     if (imageRef.current) {
       observer.observe(imageRef.current);
     }
 
-    // Cleanup observer saat komponen unmount
     return () => {
       if (imageRef.current) {
         observer.unobserve(imageRef.current);
       }
     };
-  }, []); // Array dependensi kosong, hanya berjalan sekali
+  }, []);
 
   return (
     <div
@@ -97,12 +93,35 @@ const PageImage = ({ src, alt, index, onImageLoad }) => {
 export default function ReaderPage() {
   const { slug } = useParams(); // This will be [chapterSlug] (single slug parameter)
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [chapterData, setChapterData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [currentComicSlug, setCurrentComicSlug] = useState(null);
   const [currentChapterSlug, setCurrentChapterSlug] = useState(null);
   const [loadedImagesCount, setLoadedImagesCount] = useState(0);
+  const [hasRestoredScroll, setHasRestoredScroll] = useState(false);
+  const saveTimeoutRef = useRef(null);
+
+  // Get scroll percentage from URL if coming from history
+  const scrollFromUrl = searchParams.get('scroll');
+
+  // Debounced save scroll position to history
+  const saveScrollPosition = useCallback((scrollPercent, comicSlug, chapterSlug, mangaTitle, chapterTitle) => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    saveTimeoutRef.current = setTimeout(() => {
+      saveReadingHistory({
+        comicSlug,
+        chapterSlug,
+        mangaTitle,
+        chapterTitle,
+        scrollPercent: scrollPercent, // Save as percentage (0-100)
+      });
+    }, 500); // Save after 500ms of no scroll activity
+  }, []);
 
   useEffect(() => {
     if (slug && slug.length > 0) {
@@ -122,12 +141,13 @@ export default function ReaderPage() {
           const extractedComicSlug = chapterSlug.replace(/-chapter-\d+.*$/, '').replace(/-chapter-\d+$/, '');
           setCurrentComicSlug(extractedComicSlug);
 
-          // Save reading history to localStorage
+          // Save reading history to localStorage (initial save)
           saveReadingHistory({
             comicSlug: extractedComicSlug,
             chapterSlug: chapterSlug,
             mangaTitle: data.manga_title,
             chapterTitle: data.chapter_title,
+            scrollPercent: 0,
           });
 
           // Reset loaded images count when new chapter data is set
@@ -142,10 +162,59 @@ export default function ReaderPage() {
 
       getChapterContent();
 
-      // Reset loaded images count when chapter changes
+      // Reset states when chapter changes
       setLoadedImagesCount(0);
+      setHasRestoredScroll(false);
     }
   }, [slug]);
+
+  // Restore scroll position when coming from history
+  useEffect(() => {
+    if (scrollFromUrl && !loading && chapterData && !hasRestoredScroll) {
+      const scrollPercent = parseFloat(scrollFromUrl);
+      if (!isNaN(scrollPercent) && scrollPercent > 0) {
+        // Wait for images to start rendering
+        const scrollTimeout = setTimeout(() => {
+          const documentHeight = document.documentElement.scrollHeight - window.innerHeight;
+          const targetScrollY = (scrollPercent / 100) * documentHeight;
+          window.scrollTo({ top: targetScrollY, behavior: 'smooth' });
+          setHasRestoredScroll(true);
+        }, 800); // Wait a bit longer for images to load
+
+        return () => clearTimeout(scrollTimeout);
+      }
+    }
+  }, [scrollFromUrl, loading, chapterData, hasRestoredScroll]);
+
+  // Track scroll position and save to history
+  useEffect(() => {
+    if (!chapterData || !currentComicSlug || !currentChapterSlug) return;
+
+    const handleScroll = () => {
+      const documentHeight = document.documentElement.scrollHeight - window.innerHeight;
+      if (documentHeight <= 0) return;
+
+      const scrollPercent = (window.scrollY / documentHeight) * 100;
+
+      saveScrollPosition(
+        Math.round(scrollPercent * 100) / 100, // Round to 2 decimal places
+        currentComicSlug,
+        currentChapterSlug,
+        chapterData.manga_title,
+        chapterData.chapter_title
+      );
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      // Clear any pending save timeout on cleanup
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [chapterData, currentComicSlug, currentChapterSlug, saveScrollPosition]);
 
   const navigateToChapter = (chapterSlug) => {
     router.push(`/read/${currentComicSlug}/${chapterSlug}`);
